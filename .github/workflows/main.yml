@@ -1,0 +1,102 @@
+name: LinuxDo Daily Check-in
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # 每小时执行一次
+  workflow_dispatch:
+
+jobs:
+  run_script:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget curl gnupg
+          wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" | sudo tee /etc/apt/sources.list.d/google-chrome.list
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
+          
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install DrissionPage loguru tabulate requests
+          
+      - name: Create turnstilePatch extension directory
+        run: |
+          mkdir -p turnstilePatch
+          cat > turnstilePatch/manifest.json << 'EOF'
+          {
+            "manifest_version": 3,
+            "name": "Turnstile Patch",
+            "version": "1.0",
+            "content_scripts": [{
+              "matches": ["https://linux.do/*", "https://idcflare.com/*"],
+              "js": ["content.js"],
+              "run_at": "document_start"
+            }]
+          }
+          EOF
+          
+          cat > turnstilePatch/content.js << 'EOF'
+          // Turnstile Patch
+          Object.defineProperty(window, 'turnstile', {
+            get: () => ({
+              ready: (fn) => setTimeout(fn, 100),
+              render: (element, options) => {
+                console.log('Turnstile render called', options);
+                return 'mock-widget-id';
+              },
+              execute: (element, options) => {
+                console.log('Turnstile execute called', options);
+                return Promise.resolve('mock-token-' + Date.now());
+              },
+              reset: () => console.log('Turnstile reset called'),
+              getResponse: () => {
+                const response = 'mock-cf-turnstile-response-' + Date.now();
+                console.log('Turnstile getResponse called, returning:', response);
+                return response;
+              },
+              remove: () => console.log('Turnstile remove called')
+            })
+          });
+          EOF
+          
+      - name: Run LinuxDo automation script
+        env:
+          LINUXDO_USERNAME: ${{ secrets.LINUXDO_USERNAME }}
+          LINUXDO_PASSWORD: ${{ secrets.LINUXDO_PASSWORD }}
+          BROWSE_ENABLED: ${{ secrets.BROWSE_ENABLED }}
+        run: |
+          echo "开始执行LinuxDo自动化脚本..."
+          python main.py
+          echo "脚本执行完成"
+          
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: error-logs
+          path: |
+            *.log
+            screenshot.png
+          retention-days: 7
+          
+      - name: Cleanup workflow runs
+        uses: Mattraks/delete-workflow-runs@v2
+        with:
+          token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          retain_days: 7
+          keep_minimum_runs: 5
